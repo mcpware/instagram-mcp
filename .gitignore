@@ -343,3 +343,8 @@ local_config.py
 dev_settings.py
 .local/ data/
 logs/
+
+# extras locais (nao versionar)
+.env.*
+.serena/
+logs/

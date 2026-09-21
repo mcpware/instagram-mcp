@@ -13,7 +13,10 @@ class InstagramMCPSettings(BaseSettings):
     """Instagram MCP Server configuration settings."""
 
     model_config = ConfigDict(
-        env_file=".env", env_file_encoding="utf-8", case_sensitive=False
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",  # ignore unknown keys in .env instead of breaking the boot
     )
 
     # Instagram API Configuration

@@ -429,7 +429,7 @@ class InstagramMention(BaseModel):
 class BusinessDiscoveryProfile(BaseModel):
     """Profile information from business discovery."""
 
-    id: str
+    id: Optional[str] = None
     username: Optional[str] = None
     name: Optional[str] = None
     biography: Optional[str] = None
