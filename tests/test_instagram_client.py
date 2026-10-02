@@ -363,3 +363,136 @@ class TestRateLimitExceeded:
 
         assert isinstance(error, InstagramAPIError)
         assert error.message == "Rate limit exceeded"
+
+
+class TestVideoReadyWait:
+    """Tests for polling video containers to FINISHED before publishing."""
+
+    @pytest.mark.asyncio
+    async def test_publish_carousel_waits_for_video(self, instagram_client):
+        """Mixed carousel polls the video child until FINISHED."""
+        instagram_client._make_request = AsyncMock(
+            side_effect=[
+                {"id": "child_img"},
+                {"id": "child_vid"},
+                {"status_code": "IN_PROGRESS"},
+                {"status_code": "FINISHED"},
+                {"id": "carousel_123"},
+                {"status_code": "FINISHED"},
+                {"id": "media_999"},
+            ]
+        )
+        with patch(
+            "src.instagram_client.asyncio.sleep", new=AsyncMock()
+        ):
+            response = await instagram_client.publish_carousel(
+                ["https://example.com/a.jpg", "https://example.com/b.mp4"],
+                caption="cap",
+            )
+        assert response.id == "media_999"
+        status_calls = [
+            c
+            for c in instagram_client._make_request.call_args_list
+            if c.args[0] == "GET"
+        ]
+        assert [c.args[1] for c in status_calls] == [
+            "child_vid",
+            "child_vid",
+            "carousel_123",
+        ]
+        assert status_calls[0].kwargs["params"] == {"fields": "status_code"}
+
+    @pytest.mark.asyncio
+    async def test_publish_carousel_waits_for_carousel_container(
+        self, instagram_client
+    ):
+        """Carousel container IN_PROGRESS is awaited before publishing."""
+        instagram_client._make_request = AsyncMock(
+            side_effect=[
+                {"id": "child_1"},
+                {"id": "child_2"},
+                {"id": "carousel_123"},
+                {"status_code": "IN_PROGRESS"},
+                {"status_code": "FINISHED"},
+                {"id": "media_999"},
+            ]
+        )
+        with patch(
+            "src.instagram_client.asyncio.sleep", new=AsyncMock()
+        ):
+            response = await instagram_client.publish_carousel(
+                ["https://example.com/a.jpg", "https://example.com/b.jpg"]
+            )
+        assert response.id == "media_999"
+        status_calls = [
+            c
+            for c in instagram_client._make_request.call_args_list
+            if c.args[0] == "GET"
+        ]
+        assert [c.args[1] for c in status_calls] == [
+            "carousel_123",
+            "carousel_123",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_publish_carousel_video_error_status(self, instagram_client):
+        """ERROR status on a video child raises a clear error."""
+        instagram_client._make_request = AsyncMock(
+            side_effect=[
+                {"id": "child_img"},
+                {"id": "child_vid"},
+                {"status_code": "ERROR"},
+            ]
+        )
+        with patch(
+            "src.instagram_client.asyncio.sleep", new=AsyncMock()
+        ), pytest.raises(InstagramAPIError, match="failed with status ERROR"):
+            await instagram_client.publish_carousel(
+                ["https://example.com/a.jpg", "https://example.com/b.mp4"]
+            )
+
+    @pytest.mark.asyncio
+    async def test_publish_carousel_photo_children_not_polled(
+        self, instagram_client
+    ):
+        """Photo children are never polled — only the carousel container."""
+        instagram_client._make_request = AsyncMock(
+            side_effect=[
+                {"id": "child_1"},
+                {"id": "child_2"},
+                {"id": "carousel_123"},
+                {"status_code": "FINISHED"},
+                {"id": "media_999"},
+            ]
+        )
+        with patch(
+            "src.instagram_client.asyncio.sleep", new=AsyncMock()
+        ):
+            response = await instagram_client.publish_carousel(
+                ["https://example.com/a.jpg", "https://example.com/b.jpg"]
+            )
+        assert response.id == "media_999"
+        polled = [
+            c.args[1]
+            for c in instagram_client._make_request.call_args_list
+            if c.args[0] == "GET"
+        ]
+        assert polled == ["carousel_123"]
+
+    @pytest.mark.asyncio
+    async def test_publish_reel_waits_for_video(self, instagram_client):
+        """Reels wait for FINISHED before publishing."""
+        instagram_client._make_request = AsyncMock(
+            side_effect=[
+                {"id": "reel_container"},
+                {"status_code": "FINISHED"},
+                {"id": "media_777"},
+            ]
+        )
+        with patch(
+            "src.instagram_client.asyncio.sleep", new=AsyncMock()
+        ):
+            response = await instagram_client.publish_reel(
+                "https://example.com/v.mp4", caption="cap"
+            )
+        assert response.id == "media_777"

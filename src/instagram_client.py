@@ -2,6 +2,7 @@
 Instagram API client for MCP server.
 """
 
+import asyncio
 import json
 from datetime import datetime, timedelta
 from io import BytesIO
@@ -942,6 +943,39 @@ class InstagramClient:
 
     # ── Carousel / Reels Publishing ──────────────────────────────
 
+    async def _wait_for_container_ready(
+        self,
+        container_id: str,
+        timeout: int = 300,
+        interval: int = 5,
+    ) -> None:
+        """Poll a media container until Meta finishes processing it.
+
+        VIDEO and CAROUSEL containers are processed asynchronously:
+        attaching/publishing one before ``status_code`` reaches FINISHED
+        fails with a generic API error. Polling here turns that into a
+        deterministic wait with a clear error on failure.
+        """
+        waited = 0
+        while True:
+            data = await self._make_request(
+                "GET", container_id, params={"fields": "status_code"}
+            )
+            status = data.get("status_code")
+            if status == "FINISHED":
+                return
+            if status in ("ERROR", "EXPIRED"):
+                raise InstagramAPIError(
+                    f"Video container {container_id} failed with status {status}"
+                )
+            if waited >= timeout:
+                raise InstagramAPIError(
+                    f"Video container {container_id} not ready "
+                    f"after {timeout}s"
+                )
+            await asyncio.sleep(interval)
+            waited += interval
+
     async def publish_carousel(
         self,
         image_urls: List[str],
@@ -960,6 +994,7 @@ class InstagramClient:
         try:
             # Step 1: Create individual item containers
             container_ids = []
+            video_container_ids = []
             for url in image_urls:
                 is_video = any(url.lower().endswith(ext) for ext in (".mp4", ".mov"))
                 container_data = {
@@ -975,6 +1010,14 @@ class InstagramClient:
                     "POST", f"{account_id}/media", data=container_data
                 )
                 container_ids.append(resp["id"])
+                if is_video:
+                    video_container_ids.append(resp["id"])
+
+            # Step 1b: Wait for video items to finish processing.
+            # Meta processes VIDEO containers asynchronously; attaching one
+            # before status_code=FINISHED fails the carousel publish.
+            for container_id in video_container_ids:
+                await self._wait_for_container_ready(container_id)
 
             # Step 2: Create carousel container
             carousel_data = {
@@ -987,6 +1030,11 @@ class InstagramClient:
             carousel_resp = await self._make_request(
                 "POST", f"{account_id}/media", data=carousel_data
             )
+
+            # Step 2b: Wait for the carousel container itself. Attaching
+            # children does not mean the carousel is publishable yet;
+            # publishing early fails with "media not ready" (code 9007).
+            await self._wait_for_container_ready(carousel_resp["id"])
 
             # Step 3: Publish
             publish_resp = await self._make_request(
@@ -1024,6 +1072,9 @@ class InstagramClient:
             container_resp = await self._make_request(
                 "POST", f"{account_id}/media", data=container_data
             )
+
+            # Wait for Meta to finish processing the video before publishing.
+            await self._wait_for_container_ready(container_resp["id"])
 
             # Step 2: Publish
             publish_resp = await self._make_request(
